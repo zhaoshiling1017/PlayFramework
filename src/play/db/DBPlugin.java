@@ -1,8 +1,5 @@
 package play.db;
 
-import com.mchange.v2.c3p0.ComboPooledDataSource;
-import com.mchange.v2.c3p0.ConnectionCustomizer;
-
 import java.io.File;
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -11,15 +8,19 @@ import java.sql.Driver;
 import java.sql.DriverManager;
 import java.sql.DriverPropertyInfo;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
+
 import javax.naming.Context;
 import javax.naming.InitialContext;
 import javax.sql.DataSource;
 
 import jregex.Matcher;
+
 import org.apache.commons.lang.StringUtils;
+
 import play.Logger;
 import play.Play;
 import play.PlayPlugin;
@@ -27,6 +28,9 @@ import play.exceptions.DatabaseException;
 import play.mvc.Http;
 import play.mvc.Http.Request;
 import play.mvc.Http.Response;
+
+import com.mchange.v2.c3p0.ComboPooledDataSource;
+import com.mchange.v2.c3p0.ConnectionCustomizer;
 
 /**
  * The DB plugin
@@ -121,13 +125,34 @@ public class DBPlugin extends PlayPlugin {
                     ds.setJdbcUrl(p.getProperty("db.url"));
                     ds.setUser(p.getProperty("db.user"));
                     ds.setPassword(p.getProperty("db.pass"));
-                    ds.setAcquireRetryAttempts(10);
-                    ds.setCheckoutTimeout(Integer.parseInt(p.getProperty("db.pool.timeout", "5000")));
-                    ds.setBreakAfterAcquireFailure(false);
-                    ds.setMaxPoolSize(Integer.parseInt(p.getProperty("db.pool.maxSize", "30")));
-                    ds.setMinPoolSize(Integer.parseInt(p.getProperty("db.pool.minSize", "1")));
+                    //连接池在获得新连接失败时重试的次数，如果小于等于0则无限重试直至连接获得成功,default:30
+                    ds.setAcquireRetryAttempts(Integer.parseInt(p.getProperty("db.pool.acquireRetryAttempts", "30")));
+                    //连接池在无空闲连接可用时一次性创建的新数据库连接数,default:3 
+                    ds.setAcquireIncrement(Integer.parseInt(p.getProperty("db.pool.acquireIncrement", "3")));
+                    //用来配置测试空闲连接的间隔时间。测试方式还是上面的两种之一，可以用来解决MySQL8小时断开连接的问题。因为它
+                    //保证连接池会每隔一定时间对空闲连接进行一次测试，从而保证有效的空闲连接能每隔一定时间访问一次数据库，将于MySQL
+                    //8小时无会话的状态打破,为0则不测试,default:0
+                    ds.setIdleConnectionTestPeriod(Integer.parseInt(p.getProperty("db.pool.idleConnectionTestPeriod", "0")));
+                    //连接池中保留的最大连接数,default:15
+                    ds.setMaxPoolSize(Integer.parseInt(p.getProperty("db.pool.maxSize", "15")));
+                    //连接池中保留的最小连接数,default :3
+                    ds.setMinPoolSize(Integer.parseInt(p.getProperty("db.pool.minSize", "3")));
+                    //连接的最大空闲时间，如果超过这个时间，某个数据库连接还没有被使用，则会断开掉这个连接
+                    //如果为0，则永远不会断开连接,default:0
+                    ds.setMaxIdleTime(Integer.parseInt(p.getProperty("db.pool.maxIdleTime", "0")));
+                    //这个配置主要是为了减轻连接池的负载，比如连接池中连接数因为某次数据访问高峰导致创建了很多数据连接
+                    //但是后面的时间段需要的数据库连接数很少，则此时连接池完全没有必要维护那么多的连接，所以有必要将
+                    //断开丢弃掉一些连接来减轻负载，必须小于maxIdleTime。配置不为0，则会将连接池中的连接数量保持到minPoolSize。
+                    //为0则不处理,default:0
                     ds.setMaxIdleTimeExcessConnections(Integer.parseInt(p.getProperty("db.pool.maxIdleTimeExcessConnections", "0")));
-                    ds.setIdleConnectionTestPeriod(10);
+                    //配置当连接池所有连接用完时应用程序getConnection的等待时间。为0则无限等待直至有其他连接释放
+                    //或者创建新的连接，不为0则当时间到的时候如果仍没有获得连接，则会抛出SQLException,default:0,单位:毫秒
+                    ds.setCheckoutTimeout(Integer.parseInt(p.getProperty("db.pool.timeout", "0")));
+                    //连接池初始化时创建的连接数,default:3
+                    ds.setInitialPoolSize(Integer.parseInt(p.getProperty("db.pool.initialPoolSize", "3")));
+                   //如果为true,则当连接获取失败时自动关闭数据源,除非重新启动应用程序,所以一般不用,default:false
+                    ds.setBreakAfterAcquireFailure(false);
+                    //如果设为true那么在取得连接的同时将校验连接的有效性,default:false
                     ds.setTestConnectionOnCheckin(true);
                     
                     // This check is not required, but here to make it clear that nothing changes for people
@@ -314,30 +339,41 @@ public class DBPlugin extends PlayPlugin {
         ProxyDriver(Driver d) {
             this.driver = d;
         }
-
+        
+        @Override
         public boolean acceptsURL(String u) throws SQLException {
             return this.driver.acceptsURL(u);
         }
-
+        
+        @Override
         public Connection connect(String u, Properties p) throws SQLException {
             return this.driver.connect(u, p);
         }
-
+        
+        @Override
         public int getMajorVersion() {
             return this.driver.getMajorVersion();
         }
-
+        
+        @Override
         public int getMinorVersion() {
             return this.driver.getMinorVersion();
         }
-
+        
+        @Override
         public DriverPropertyInfo[] getPropertyInfo(String u, Properties p) throws SQLException {
             return this.driver.getPropertyInfo(u, p);
         }
-
+        
+        @Override
         public boolean jdbcCompliant() {
             return this.driver.jdbcCompliant();
         }
+
+		public java.util.logging.Logger getParentLogger() throws SQLFeatureNotSupportedException {
+			// TODO Auto-generated method stub
+			return null;
+		}
     }
 
     public static class PlayConnectionCustomizer implements ConnectionCustomizer {
